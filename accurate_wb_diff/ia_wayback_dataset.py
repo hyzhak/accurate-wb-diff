@@ -41,7 +41,7 @@ def get_captures_of_url_and_year(url, year):
     assert response.status == 200
     assert response.data
     captures_txt = response.data.decode('utf-8')
-    captures = [l.split(' ') for l in captures_txt.strip().split("\n")]
+    captures = [l.split(' ') for l in captures_txt.strip().split('\n')]
     return captures
 
 
@@ -68,7 +68,6 @@ def for_each_capture(url, year):
         duplicated = False
         if digest not in stored_captures:
             response_data = download_capture(url, timestamp)
-            # TODO: store to file
             stored_captures[digest] = response_data
         else:
             duplicated = True
@@ -115,3 +114,84 @@ def store_captures_to_dataset(url, year):
         print(f'already have {file_name}')
 
     print('we got all')
+    return captures
+
+
+def load_data(url, year, path=None, force_refresh=False):
+    """
+    get wayback machine data set for particular url and year
+    and use local store version from path, or load on demand
+
+    TODO:
+    - we maybe would like to force_refresh for the last year by default
+    because it is very likely that we could get brand new captures there
+    from the last cashed version
+
+    :param url:
+    :param year:
+    :param path: if undefined won't be stored
+    :param force_refresh:
+    :return:
+    """
+    one_year_captures_filename = None
+    try_local_first = path and not force_refresh
+    store_locally = path is not None
+
+    global stored_captures
+    if force_refresh:
+        stored_captures = {}
+
+    if path:
+        dataset_path = f'{path}/wbm'
+        dataset_path_captures = f'{dataset_path}/captures'
+        dataset_path_urls = f'{dataset_path}/urls'
+        url_to_path = encode_url_to_path(url)
+        one_year_captures_filename = f'{dataset_path_urls}/{url_to_path}/{year}'
+        set_dataset_path(path)
+
+    captures_of_year = None
+    if try_local_first:
+        # try to get local
+        try:
+            with open(one_year_captures_filename, 'r') as one_year_captures_file:
+                captures_of_year = json.loads(one_year_captures_file.read())
+        except OSError as e:
+            if e.errno not in [errno.EEXIST, errno.ENOENT]:
+                raise e
+
+    if not captures_of_year:
+        # try to fetch
+        captures_of_year = get_captures_of_url_and_year(url, year)
+
+    for [timestamp, digest] in captures_of_year:
+        duplicated = False
+        capture_data = None
+        if try_local_first:
+            capture_file_name = f'{dataset_path_captures}/{digest}'
+            try:
+                with open(capture_file_name, 'r') as capture_file:
+                    capture_data = capture_file.read()
+            except OSError as e:
+                if e.errno not in [errno.EEXIST, errno.ENOENT]:
+                    raise e
+
+        if not capture_data:
+            if digest not in stored_captures:
+                capture_data = download_capture(url, timestamp)
+                stored_captures[digest] = capture_data
+                if store_locally:
+                    ensure_dir(dataset_path_captures)
+                    capture_file_name = f'{dataset_path_captures}/{digest}'
+                    with open(capture_file_name, 'w+') as url_captures_file:
+                        url_captures_file.write(json.dumps(capture_data))
+            else:
+                duplicated = True
+                capture_data = stored_captures[digest]
+
+        yield (timestamp, digest, capture_data, duplicated)
+
+    if store_locally:
+        ensure_dir(f'{dataset_path_urls}/{url_to_path}')
+        with open(one_year_captures_filename, 'w+') as url_captures_file:
+            url_captures_file.write(json.dumps(captures_of_year))
+        print(f'created file {capture_file_name}')
